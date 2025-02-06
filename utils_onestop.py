@@ -211,9 +211,9 @@ def R2_benchmark(sp_list):
 
 	return res
 
-def prepare_scanpath(sp_dnn, reg_sp_dnn, sn_len, sp_human, cf):
+def prepare_scanpath(sp_dnn, reg_sp_dnn, sn_len, sp_human, cf, ):
 	max_sp_len = sp_dnn.shape[1]
-	sp_human = sp_human.detach().to('cpu').numpy()
+	sp_human_cut = []
 
 	#stop_indx = [np.where(sp_dnn[i,:]==(sn_len[i]+1))[0][0] for i in range(sp_dnn.shape[0])]
 	#Find the number "sn_len+1" -> the end point
@@ -231,22 +231,25 @@ def prepare_scanpath(sp_dnn, reg_sp_dnn, sn_len, sp_human, cf):
 	for i in range(len(sp_dnn_cut)):
 		sp_dnn_cut[i][-1] = cf["max_sn_len"]-1
 
-	#process the human scanpath data, truncating data after the end point
-	stop_indx = [np.where(sp_human[i,:]==cf["max_sn_len"]-1)[0][0] for i in range(sp_human.shape[0])]
-	sp_human_cut = [sp_human[i][:stop_indx[i]+1] for i in range(sp_human.shape[0])]
+	if sp_human:
+		sp_human = sp_human.detach().to('cpu').numpy() 
+		#process the human scanpath data, truncating data after the end point
+		stop_indx = [np.where(sp_human[i,:]==cf["max_sn_len"]-1)[0][0] for i in range(sp_human.shape[0])]
+		sp_human_cut = [sp_human[i][:stop_indx[i]+1] for i in range(sp_human.shape[0])]
 	
 	#truncate fixation durations
 	reg_sp_dnn = [reg_sp[:len(dnn_sp)] for reg_sp, dnn_sp in zip(reg_sp_dnn, sp_dnn_cut)]
 	
 	return sp_dnn_cut, reg_sp_dnn, sp_human_cut
 
-def ez_reader_formatter(unique_paragraph_ids, text_spacing_version, cls_dnn_sp, reg_dnn_sp):
+def ez_reader_formatter(unique_paragraph_ids, text_spacing_version, cls_dnn_sp, reg_dnn_sp, repeat):
 	df_dict = {
 		"fix_id": [],
 		"unique_paragraph_id": [], 
 		"text_spacing_version": [], 
 		"sp_fix_pos": [], 
-		"sp_fix_dur": []
+		"sp_fix_dur": np.array([]),
+		"repeat": []
 	}
 	
 	text_spacing_version = text_spacing_version.numpy().tolist()
@@ -254,15 +257,17 @@ def ez_reader_formatter(unique_paragraph_ids, text_spacing_version, cls_dnn_sp, 
 	for i, (upi, tsv, cds, rds) in enumerate(zip(unique_paragraph_ids, text_spacing_version, cls_dnn_sp, reg_dnn_sp)):
 		# print(i)
 		assert(len(cds) == len(rds))
-		sp_len = len(cds)
+		sp_len = len(cds)-1
 		df_dict["fix_id"] += list(range(sp_len))
 		df_dict["unique_paragraph_id"] += [upi]*sp_len
 		df_dict["text_spacing_version"] += [tsv]*sp_len
-		df_dict["sp_fix_pos"] += cds.tolist()
-		df_dict["sp_fix_dur"] += (rds*1000).tolist()
+		df_dict["sp_fix_pos"] += cds[:-1].tolist()
+		df_dict["sp_fix_dur"] = np.concatenate([df_dict["sp_fix_dur"], (rds*1000)[:-1]])
+	
+	df_dict["repeat"] = [repeat]*len(df_dict["fix_id"])
 
-		output_df = pd.DataFrame.from_dict(df_dict)
-		
+	output_df = pd.DataFrame.from_dict(df_dict)
+	output_df.sp_fix_dur = output_df.sp_fix_dur.round(3)
 	return output_df
 
 def onestop_load_native_speaker():
@@ -278,15 +283,13 @@ def compute_word_length_onestop(arr):
 	arr[arr!=0] = 1/(arr[arr!=0])
 	return arr
 
-def _process_onestop(sn_list, ba_to_participant_id, word_info_df, eyemovement_df, tokenizer, cf, check_baseline, keep_ids):
+def _process_onestop(sn_list, ba_to_participant_id, word_info_df, eyemovement_df, tokenizer, cf, check_baseline, keep_ids, inference):
 	"""
 	SN_token_embedding   <CLS>, bla, bla, <SEP>
 	SP_token_embedding       <CLS>, bla, bla, <SEP>
 	SP_ordinal_pos 0, bla, bla, max_sp_len
 	SP_fix_dur     0, bla, bla, 0
 	"""
-
-	outlier_drop = 0
 
 	SN_input_ids, SN_attention_mask, SN_WORD_len, WORD_ids_sn = [], [], [], []
 	SP_input_ids, SP_attention_mask, WORD_ids_sp = [], [], []
@@ -295,188 +298,233 @@ def _process_onestop(sn_list, ba_to_participant_id, word_info_df, eyemovement_df
 	sn_id_list =  []
 	dataset_NLD_baseline = []
 	dataset_R2_baseline = []
+	
 	if keep_ids:
 		SN_unique_paragraph_id, SP_text_spacing_version = [], []
-		
-	for sn_id_truncated in tqdm(ba_to_participant_id.keys()): # 1_10
-		sn_id_extended_list = {value for value in sn_list if "_".join(value.split("_")[:2]) == sn_id_truncated} # from 1_10 to list of 1_10_..., 1_10_...
-		for sn_id in sn_id_extended_list: # sn_id = 1_10_Adv_1...
-			#process sentence sequence
-			sn_eye_df = eyemovement_df[eyemovement_df.unique_paragraph_id==sn_id]
-			#notice: Each sentence is recorded multiple times in file |word_info_df|.
-			sn = word_info_df[word_info_df.unique_paragraph_id == sn_id]
+	
+	if inference:
+		for unique_paragraph_id, text_spacing_version in tqdm(word_info_df[['unique_paragraph_id', 'text_spacing_version']].drop_duplicates().values.tolist()):
+			full_sn_df = word_info_df[(word_info_df.unique_paragraph_id==unique_paragraph_id) & (word_info_df.text_spacing_version == text_spacing_version)]
+			first_sub = full_sn_df.drop_duplicates(["unique_paragraph_id", "text_spacing_version"]).participant_id.values[0]
+			sn_sub = full_sn_df[full_sn_df.participant_id == first_sub]
 			
-			#process fixation sequence
-			sn_fix_list = []
-			sn_dur_list = []
+			''' START INSERTED SEGMENT'''
+			#compute word length for each word
+			sn_word_len = compute_word_length_onestop(sn_sub.word_length.values)
+			sn_word_list = list(sn_sub.IA_LABEL.values)
+			
+			#tokenization and padding
+			tokenizer.padding_side = 'right'
+			sn_word_list = ['[CLS]'] + sn_word_list + ['[SEP]']
+			#pre-tokenized input
+			tokens = tokenizer.encode_plus(sn_word_list,
+											add_special_tokens = False,
+											truncation=False,
+											max_length = cf['max_sn_token'],
+											padding = 'max_length',
+											return_attention_mask=True,
+											is_split_into_words=True)
+			encoded_sn = tokens['input_ids']
+			mask_sn = tokens['attention_mask']
+			#use offset mapping to determine if two tokens are in the same word.
+			#index start from 0, CLS -> 0 and SEP -> last index
+			word_ids_sn = tokens.word_ids()
+			word_ids_sn = [val if val is not None else np.nan for val in word_ids_sn]
 
-			for sub_id in ba_to_participant_id[sn_id_truncated]:
-				sub_df = sn_eye_df[sn_eye_df.participant_id==sub_id]
-				# remove fixations on non-words
-				sub_df = sub_df.loc[sub_df.CURRENT_FIX_INTEREST_AREA_LABEL != '.']
+			#sentence information
+			SN_input_ids.append(encoded_sn)
+			SN_attention_mask.append(mask_sn)
+			SN_WORD_len.append(sn_word_len)
+			WORD_ids_sn.append(word_ids_sn)
+			sub_id_list.append(first_sub)
+			sn_id_list.append(unique_paragraph_id)
+			
+			if keep_ids:
+				SN_unique_paragraph_id.append(unique_paragraph_id)
+				SP_text_spacing_version.append(sn_sub.text_spacing_version.values)
+
+	else:	
+		for sn_id_truncated in tqdm(ba_to_participant_id.keys()): # 1_10
+			sn_id_extended_list = {value for value in sn_list if "_".join(value.split("_")[:2]) == sn_id_truncated} # from 1_10 to list of 1_10_..., 1_10_...
+			for sn_id in sn_id_extended_list: # sn_id = 1_10_Adv_1...
+				#process sentence sequence
+				sn_eye_df = eyemovement_df[eyemovement_df.unique_paragraph_id==sn_id]
+				#notice: Each sentence is recorded multiple times in file |word_info_df|.
+				sn = word_info_df[word_info_df.unique_paragraph_id == sn_id]
 				
-				if len(sub_df) == 0: #no scanpath data found for the subject
-					continue
-				
-				''' START INSERTED SEGMENT'''
-				sn_sub = sn[sn['participant_id']==sub_id]
-				#compute word length for each word
-				sn_word_len = compute_word_length_onestop(sn_sub.word_length.values)
-				sn_word_list = list(sn_sub.IA_LABEL.values)
-				sn_len = len(sn_word_list)
-				
-				#tokenization and padding
-				tokenizer.padding_side = 'right'
-				sn_word_list = ['[CLS]'] + sn_word_list + ['[SEP]']
-				#pre-tokenized input
-				tokens = tokenizer.encode_plus(sn_word_list,
-												add_special_tokens = False,
-												truncation=False,
-												max_length = cf['max_sn_token'],
-												padding = 'max_length',
-												return_attention_mask=True,
-												is_split_into_words=True)
-				encoded_sn = tokens['input_ids']
-				mask_sn = tokens['attention_mask']
-				#use offset mapping to determine if two tokens are in the same word.
-				#index start from 0, CLS -> 0 and SEP -> last index
-				word_ids_sn = tokens.word_ids()
-				word_ids_sn = [val if val is not None else np.nan for val in word_ids_sn]
+				#process fixation sequence
+				sn_fix_list = []
+				sn_dur_list = []
 
-				''' END INSERTED SEGMENT'''
+				for sub_id in ba_to_participant_id[sn_id_truncated]:
+					sub_df = sn_eye_df[sn_eye_df.participant_id==sub_id]
+					# remove fixations on non-words
+					sub_df = sub_df.loc[sub_df.CURRENT_FIX_INTEREST_AREA_LABEL != '.']
+					
+					if len(sub_df) == 0: #no scanpath data found for the subject
+						continue
+					
+					''' START INSERTED SEGMENT'''
+					sn_sub = sn[sn['participant_id']==sub_id]
+					#compute word length for each word
+					sn_word_len = compute_word_length_onestop(sn_sub.word_length.values)
+					sn_word_list = list(sn_sub.IA_LABEL.values)
+					
+					#tokenization and padding
+					tokenizer.padding_side = 'right'
+					sn_word_list = ['[CLS]'] + sn_word_list + ['[SEP]']
+					#pre-tokenized input
+					tokens = tokenizer.encode_plus(sn_word_list,
+													add_special_tokens = False,
+													truncation=False,
+													max_length = cf['max_sn_token'],
+													padding = 'max_length',
+													return_attention_mask=True,
+													is_split_into_words=True)
+					encoded_sn = tokens['input_ids']
+					mask_sn = tokens['attention_mask']
+					#use offset mapping to determine if two tokens are in the same word.
+					#index start from 0, CLS -> 0 and SEP -> last index
+					word_ids_sn = tokens.word_ids()
+					word_ids_sn = [val if val is not None else np.nan for val in word_ids_sn]
 
-				#prepare decoder input and output
-				sp_word_pos, sp_fix_loc, sp_fix_dur = sub_df.CURRENT_FIX_INTEREST_AREA_ID.values, sub_df.CURRENT_FIX_NEAREST_INTEREST_AREA_DISTANCE.values, sub_df.CURRENT_FIX_DURATION.values
+					''' END INSERTED SEGMENT'''
 
-				if keep_ids:
-					sp_text_spacing_version = sub_df.text_spacing_version.values
+					#prepare decoder input and output
+					sp_word_pos, sp_fix_loc, sp_fix_dur = sub_df.CURRENT_FIX_INTEREST_AREA_ID.values, sub_df.CURRENT_FIX_NEAREST_INTEREST_AREA_DISTANCE.values, sub_df.CURRENT_FIX_DURATION.values
 
-				'''
-				# scanpath too long, remove outliers, speed up the inference
-				if len(sp_word_pos) > cf["max_sp_len"] - 10:
-					outlier_drop +=1
-					continue
-				
-				# 3)scanpath too short for a normal length sentence
-				if len(sp_word_pos) <= 1 and sn_len > 10:
-					outlier_drop +=1
-					continue
-				'''
-				
-				#dataset is noisy -> sanity check
-				# 1) check if recorded fixation duration are within reasonable limits
-				#Less than 50ms attempt to merge with neighbouring fixation if fixate is on the same word, otherwise delete
-				outlier_indx = np.where(sp_fix_dur<50)[0]
-				if outlier_indx.size>0:
-					for out_idx in range(len(outlier_indx)):
-						outlier_i = outlier_indx[out_idx]
-						merge_flag = False
+					if keep_ids:
+						sp_text_spacing_version = sub_df.text_spacing_version.values
 
-						#outliers are commonly found in the fixation of the last record and the first record, and are removed directly
-						if outlier_i == len(sp_fix_dur)-1 or outlier_i == 0:
-							merge_flag = True
+					'''
+					# scanpath too long, remove outliers, speed up the inference
+					if len(sp_word_pos) > cf["max_sp_len"] - 10:
+						outlier_drop +=1
+						continue
+					
+					# 3)scanpath too short for a normal length sentence
+					if len(sp_word_pos) <= 1 and sn_len > 10:
+						outlier_drop +=1
+						continue
+					'''
+					
+					#dataset is noisy -> sanity check
+					# 1) check if recorded fixation duration are within reasonable limits
+					#Less than 50ms attempt to merge with neighbouring fixation if fixate is on the same word, otherwise delete
+					outlier_indx = np.where(sp_fix_dur<50)[0]
+					if outlier_indx.size>0:
+						for out_idx in range(len(outlier_indx)):
+							outlier_i = outlier_indx[out_idx]
+							merge_flag = False
 
-						else:
-							if outlier_i-1 >= 0 and merge_flag == False:
-								#try to merge with the left fixation
-								if sub_df.iloc[outlier_i].CURRENT_FIX_INTEREST_AREA_LABEL == sub_df.iloc[outlier_i-1].CURRENT_FIX_INTEREST_AREA_LABEL:
-									sp_fix_dur[outlier_i-1] = sp_fix_dur[outlier_i-1] + sp_fix_dur[outlier_i]
-									merge_flag = True
+							#outliers are commonly found in the fixation of the last record and the first record, and are removed directly
+							if outlier_i == len(sp_fix_dur)-1 or outlier_i == 0:
+								merge_flag = True
 
-							if outlier_i+1 < len(sp_fix_dur) and merge_flag == False:
-								#try to merge with the right fixation
-								if sub_df.iloc[outlier_i].CURRENT_FIX_INTEREST_AREA_LABEL == sub_df.iloc[outlier_i+1].CURRENT_FIX_INTEREST_AREA_LABEL:
-									sp_fix_dur[outlier_i+1] = sp_fix_dur[outlier_i+1] + sp_fix_dur[outlier_i]
-									merge_flag = True
+							else:
+								if outlier_i-1 >= 0 and merge_flag == False:
+									#try to merge with the left fixation
+									if sub_df.iloc[outlier_i].CURRENT_FIX_INTEREST_AREA_LABEL == sub_df.iloc[outlier_i-1].CURRENT_FIX_INTEREST_AREA_LABEL:
+										sp_fix_dur[outlier_i-1] = sp_fix_dur[outlier_i-1] + sp_fix_dur[outlier_i]
+										merge_flag = True
 
-						sp_word_pos = np.delete(sp_word_pos, outlier_i)
-						sp_fix_loc = np.delete(sp_fix_loc, outlier_i)
-						sp_fix_dur = np.delete(sp_fix_dur, outlier_i)
-						sub_df.drop(sub_df.index[outlier_i], axis=0, inplace=True)
-						outlier_indx = outlier_indx-1
+								if outlier_i+1 < len(sp_fix_dur) and merge_flag == False:
+									#try to merge with the right fixation
+									if sub_df.iloc[outlier_i].CURRENT_FIX_INTEREST_AREA_LABEL == sub_df.iloc[outlier_i+1].CURRENT_FIX_INTEREST_AREA_LABEL:
+										sp_fix_dur[outlier_i+1] = sp_fix_dur[outlier_i+1] + sp_fix_dur[outlier_i]
+										merge_flag = True
 
-				# 4) check landing position feature
-				#assign missing value to 'nan'
-				#sp_fix_loc=np.where(sp_fix_loc=='.', np.nan, sp_fix_loc) ####################
-				#convert string of number of float type
-				sp_fix_loc = [float(i) for i in sp_fix_loc]
+							sp_word_pos = np.delete(sp_word_pos, outlier_i)
+							sp_fix_loc = np.delete(sp_fix_loc, outlier_i)
+							sp_fix_dur = np.delete(sp_fix_dur, outlier_i)
+							sub_df.drop(sub_df.index[outlier_i], axis=0, inplace=True)
+							outlier_indx = outlier_indx-1
 
-				#Outliers in calculated landing positions due to lack of valid AOI data, assign to 'nan'
-				if np.nanmax(sp_fix_loc) > 35:
-					missing_idx = np.where(np.array(sp_fix_loc) > 5)[0]
-					for miss in missing_idx:
-						if sub_df.iloc[miss].CURRENT_FIX_INTEREST_AREA_LEFT in ['NONE', 'BEFORE', 'AFTER', 'BOTH']:
-							sp_fix_loc[miss] = np.nan
-						else:
-							print('Landing position calculation error. Unknown cause, needs to be checked')
+					# 4) check landing position feature
+					#assign missing value to 'nan'
+					#sp_fix_loc=np.where(sp_fix_loc=='.', np.nan, sp_fix_loc) ####################
+					#convert string of number of float type
+					sp_fix_loc = [float(i) for i in sp_fix_loc]
 
-				sp_ordinal_pos = sp_word_pos.astype(int)
-				SP_ordinal_pos.append(sp_ordinal_pos)
-				SP_fix_dur.append(sp_fix_dur)
-				SP_landing_pos.append(sp_fix_loc)
+					#Outliers in calculated landing positions due to lack of valid AOI data, assign to 'nan'
+					if np.nanmax(sp_fix_loc) > 35:
+						missing_idx = np.where(np.array(sp_fix_loc) > 5)[0]
+						for miss in missing_idx:
+							if sub_df.iloc[miss].CURRENT_FIX_INTEREST_AREA_LEFT in ['NONE', 'BEFORE', 'AFTER', 'BOTH']:
+								sp_fix_loc[miss] = np.nan
+							else:
+								print('Landing position calculation error. Unknown cause, needs to be checked')
 
-				if check_baseline:
-					sn_fix_list.append(sp_ordinal_pos)
-					sn_dur_list.append(sp_fix_dur)
+					sp_ordinal_pos = sp_word_pos.astype(int)
+					SP_ordinal_pos.append(sp_ordinal_pos)
+					SP_fix_dur.append(sp_fix_dur)
+					SP_landing_pos.append(sp_fix_loc)
 
-				sp_token_list = ['[CLS]'] + [sn_word_list[i] for i in sp_ordinal_pos] + ['[SEP]'] ########################## sn_str.split() is shorter than sp_ordinal_pos
-				#tokenization and padding for scanpath, i.e. fixated word sequence
-				sp_tokens = tokenizer.encode_plus(sp_token_list,
-												add_special_tokens = False,
-												truncation=False,
-												max_length = cf['max_sp_token'],
-												padding = 'max_length',
-												return_attention_mask=True,
-												is_split_into_words=True)
-				encoded_sp = sp_tokens['input_ids']
-				mask_sp = sp_tokens['attention_mask']
-				#index start from 0, CLS -> 0 and SEP -> last index
-				word_ids_sp = sp_tokens.word_ids()
-				word_ids_sp = [val if val is not None else np.nan for val in word_ids_sp]
+					if check_baseline:
+						sn_fix_list.append(sp_ordinal_pos)
+						sn_dur_list.append(sp_fix_dur)
 
-				'''
-				# tokened scanpath too long, remove outliers, speed up the inference
-				if len([entry for entry in encoded_sp if entry != 0]) > cf["max_sp_len"] - 10:
-					outlier_drop +=1
-					continue
-				'''
-				
-				SP_input_ids.append(encoded_sp)
-				SP_attention_mask.append(mask_sp)
-				WORD_ids_sp.append(word_ids_sp)
+					sp_token_list = ['[CLS]'] + [sn_word_list[i] for i in sp_ordinal_pos] + ['[SEP]'] ########################## sn_str.split() is shorter than sp_ordinal_pos
+					#tokenization and padding for scanpath, i.e. fixated word sequence
+					sp_tokens = tokenizer.encode_plus(sp_token_list,
+													add_special_tokens = False,
+													truncation=False,
+													max_length = cf['max_sp_token'],
+													padding = 'max_length',
+													return_attention_mask=True,
+													is_split_into_words=True)
+					encoded_sp = sp_tokens['input_ids']
+					mask_sp = sp_tokens['attention_mask']
+					#index start from 0, CLS -> 0 and SEP -> last index
+					word_ids_sp = sp_tokens.word_ids()
+					word_ids_sp = [val if val is not None else np.nan for val in word_ids_sp]
 
-				#sentence information
-				SN_input_ids.append(encoded_sn)
-				SN_attention_mask.append(mask_sn)
-				SN_WORD_len.append(sn_word_len)
-				WORD_ids_sn.append(word_ids_sn)
-				sub_id_list.append(sub_id)#int(sub_id.split("_")[1])) # from "l39_125" to 125
-				sn_id_list.append(sn_id)
+					'''
+					# tokened scanpath too long, remove outliers, speed up the inference
+					if len([entry for entry in encoded_sp if entry != 0]) > cf["max_sp_len"] - 10:
+						outlier_drop +=1
+						continue
+					'''
+					
+					SP_input_ids.append(encoded_sp)
+					SP_attention_mask.append(mask_sp)
+					WORD_ids_sp.append(word_ids_sp)
 
-				if keep_ids:
-					SN_unique_paragraph_id.append(sn_id)
-					SP_text_spacing_version.append(sp_text_spacing_version)
+					#sentence information
+					SN_input_ids.append(encoded_sn)
+					SN_attention_mask.append(mask_sn)
+					SN_WORD_len.append(sn_word_len)
+					WORD_ids_sn.append(word_ids_sn)
+					sub_id_list.append(sub_id)#int(sub_id.split("_")[1])) # from "l39_125" to 125
+					sn_id_list.append(sn_id)
+
+					if keep_ids:
+						SN_unique_paragraph_id.append(sn_id)
+						SP_text_spacing_version.append(sp_text_spacing_version)
 		
-			if check_baseline:
-				dataset_NLD_baseline += NLD_benchmark(sn_fix_list)
-				dataset_R2_baseline += R2_benchmark(sn_dur_list)
+				if check_baseline:
+					dataset_NLD_baseline += NLD_benchmark(sn_fix_list)
+					dataset_R2_baseline += R2_benchmark(sn_dur_list)
+
+	if not inference:
+		#padding for batch computation
+		SP_ordinal_pos = pad_seq(SP_ordinal_pos, max_len=(cf["max_sp_len"]), pad_value=cf["max_sn_len"])
+		SP_fix_dur = pad_seq(SP_fix_dur, max_len=(cf["max_sp_len"]), pad_value=0)
+		SP_landing_pos = pad_seq(SP_landing_pos, cf["max_sp_len"], pad_value=0, dtype=np.float32)
+		SP_input_ids = np.asarray(SP_input_ids, dtype=np.int64)
+		SP_attention_mask = np.asarray(SP_attention_mask, dtype=np.float32)
 
 	#padding for batch computation
-	SP_ordinal_pos = pad_seq(SP_ordinal_pos, max_len=(cf["max_sp_len"]), pad_value=cf["max_sn_len"])
-	SP_fix_dur = pad_seq(SP_fix_dur, max_len=(cf["max_sp_len"]), pad_value=0)
-	SP_landing_pos = pad_seq(SP_landing_pos, cf["max_sp_len"], pad_value=0, dtype=np.float32)
 	SN_WORD_len = pad_seq_with_nan(SN_WORD_len, cf["max_sn_len"], dtype=np.float32)
 
 	#assign type
 	SN_input_ids = np.asarray(SN_input_ids, dtype=np.int64)
 	SN_attention_mask = np.asarray(SN_attention_mask, dtype=np.float32)
-	SP_input_ids = np.asarray(SP_input_ids, dtype=np.int64)
-	SP_attention_mask = np.asarray(SP_attention_mask, dtype=np.float32)
-	sub_id_list = np.asarray(sub_id_list)#, dtype=np.int64)
+	sub_id_list = np.asarray(sub_id_list)
 	sn_id_list = np.asarray(sn_id_list)
 	WORD_ids_sn = np.asarray(WORD_ids_sn)
 	WORD_ids_sp = np.asarray(WORD_ids_sp)
-
+	
 	if check_baseline:
 		print(f"\nHuman baseline NLD: {sum(dataset_NLD_baseline)/len(dataset_NLD_baseline)}")
 		print(f"Human baseline R2: {sum(dataset_R2_baseline)/len(dataset_R2_baseline)}\n")
@@ -488,11 +536,10 @@ def _process_onestop(sn_list, ba_to_participant_id, word_info_df, eyemovement_df
 			}
 	
 	if keep_ids:
-		data["SN_unique_paragraph_id"] = np.asarray(SN_unique_paragraph_id)
-		data["SP_text_spacing_version"] = SP_text_spacing_version
-	
-	print("Outliers dropped: ", outlier_drop)
+				data["SN_unique_paragraph_id"] = np.asarray(SN_unique_paragraph_id)
+				data["SP_text_spacing_version"] = SP_text_spacing_version
 
+	
 	return data
 
 class onestop_dataset(Dataset):
@@ -500,11 +547,11 @@ class onestop_dataset(Dataset):
 
 	def __init__(
 		self,
-		word_info_df, eyemovement_df, cf, ba_to_participant_id, sn_list, tokenizer, check_baseline=False, keep_ids=False
+		word_info_df, eyemovement_df, cf, ba_to_participant_id, sn_list, tokenizer, check_baseline=False, keep_ids=False, inference=False
 	):
-
-		self.data = _process_onestop(sn_list, ba_to_participant_id, word_info_df, eyemovement_df, tokenizer, cf, check_baseline, keep_ids)
+		self.data = _process_onestop(sn_list, ba_to_participant_id, word_info_df, eyemovement_df, tokenizer, cf, check_baseline, keep_ids, inference)
 		self.keep_ids = keep_ids
+		self.inference = inference
 
 	def __len__(self):
 		return len(self.data["SN_input_ids"])
@@ -521,16 +568,16 @@ class onestop_dataset(Dataset):
 		sample["sn_attention_mask"] = self.data["SN_attention_mask"][idx,:]
 		sample["sn_word_len"] = self.data['SN_WORD_len'][idx,:]
 		sample['word_ids_sn'] =  self.data['WORD_ids_sn'][idx,:]
-
-		sample["sp_input_ids"] = self.data["SP_input_ids"][idx,:]
-		sample["sp_attention_mask"] = self.data["SP_attention_mask"][idx,:]
-		sample['word_ids_sp'] =  self.data['WORD_ids_sp'][idx,:]
-
-		sample["sp_pos"] = self.data["SP_ordinal_pos"][idx,:]
-		sample["sp_fix_dur"] = self.data["SP_fix_dur"][idx,:]
-		sample["sp_landing_pos"] = self.data["SP_landing_pos"][idx,:]
-
 		sample["sub_id"] = self.data["sub_id"][idx]
+
+		if not self.inference:
+			sample["sp_input_ids"] = self.data["SP_input_ids"][idx,:]
+			sample["sp_attention_mask"] = self.data["SP_attention_mask"][idx,:]
+			sample['word_ids_sp'] =  self.data['WORD_ids_sp'][idx,:]
+
+			sample["sp_pos"] = self.data["SP_ordinal_pos"][idx,:]
+			sample["sp_fix_dur"] = self.data["SP_fix_dur"][idx,:]
+			sample["sp_landing_pos"] = self.data["SP_landing_pos"][idx,:]
 		
 		if self.keep_ids:
 			sample["sn_unique_paragraph_id"] = self.data["SN_unique_paragraph_id"][idx]

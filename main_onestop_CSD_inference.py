@@ -16,9 +16,10 @@ import pickle
 import json
 import matplotlib.pyplot as plt
 import argparse
+from time import time
 
 if __name__ == '__main__':
-	parser = argparse.ArgumentParser(description='run Eyettention on OneStop dataset')
+	parser = argparse.ArgumentParser(description='runs Eyettention on OneStop dataset')
 	parser.add_argument(
 		'--test_mode',
 		help='New Sentence Split: text, New Reader Split: subject',
@@ -117,27 +118,23 @@ if __name__ == '__main__':
 	sp_human_list = []
 
 	for fold_indx in range(n_folds):
-		print(f"\nLoading datasets for fold {fold_indx}:\n")
+		print('*'*50)
+		print('*'*50)
+		print(f"\nLoading the train dataset for fold {fold_indx}:\n")
 		ba_to_participant_id_train = process_dataset(fold_indx, saf_df, 'train')
-		ba_to_participant_id_val = process_dataset(fold_indx, saf_df, 'val')
-		ba_to_participant_id_test = process_dataset(fold_indx, saf_df, 'test')
 
 		#Preparing batch data
 		dataset_train = onestop_dataset(word_info_df, eyemovement_df, onestop, ba_to_participant_id_train , sn_list, tokenizer, keep_ids=keep_ids)
 		train_dataloaderr = DataLoader(dataset_train, batch_size = onestop["train_batch_size"], shuffle = False, drop_last=False)
 
-		dataset_val = onestop_dataset(word_info_df, eyemovement_df, onestop, ba_to_participant_id_val, sn_list, tokenizer, keep_ids=keep_ids)
-		val_dataloaderr = DataLoader(dataset_val, batch_size = onestop["val_batch_size"], shuffle = False, drop_last=False)
-
-		dataset_test = onestop_dataset(word_info_df, eyemovement_df, onestop, ba_to_participant_id_test, sn_list, tokenizer, check_baseline=False, keep_ids=keep_ids)
-		test_dataloaderr = DataLoader(dataset_test, batch_size = onestop["test_batch_size"], shuffle = False, drop_last=False)
+		print(f"\nLoading the entire dataset for fold {fold_indx}:\n")
+		dataset_all = onestop_dataset(word_info_df, eyemovement_df, onestop, _, sn_list, tokenizer, keep_ids=keep_ids, inference=True)
+		all_dataloaderr = DataLoader(dataset_all, batch_size = onestop["val_batch_size"], shuffle = False, drop_last=False)
 
 		print("\nData points detected:")
-		print(f"Train: {len(dataset_train)}, Test: {len(dataset_val)}, Val: {len(dataset_test)}, Total: {len(dataset_train)+len(dataset_val)+len(dataset_test)}\n")
+		print(f"Train: {len(dataset_train)}, All: {len(dataset_all)}\n")
 
 		#z-score normalization for gaze features
-		fix_dur_mean, fix_dur_std = calculate_mean_std(dataloader=train_dataloaderr, feat_key="sp_fix_dur", padding_value=0, scale=1000)
-		landing_pos_mean, landing_pos_std = calculate_mean_std(dataloader=train_dataloaderr, feat_key="sp_landing_pos", padding_value=0)
 		sn_word_len_mean, sn_word_len_std = calculate_mean_std(dataloader=train_dataloaderr, feat_key="sn_word_len")
 
 		# load model
@@ -147,43 +144,40 @@ if __name__ == '__main__':
 		print("\n- Inferencing -\n")
 		dnn.eval()
 		
-		runs = 1
+		repeats = 1000
 		df_report_list = []
 		
 		dnn.load_state_dict(torch.load(os.path.join(args.save_data_folder,f'CSD_CELoss_MSELoss_OneStop_{args.test_mode}_eyettention_{args.atten_type}_newloss_fold{fold_indx}.pth'), map_location='cpu', weights_only=True))
 		dnn.to(device)
 
-		for run in range(runs):
-			print(f"Inferencing fold {fold_indx}, run {run + 1} out of {runs}")
-			for part, dataset in {"Train": train_dataloaderr, "Val": val_dataloaderr, "Test": test_dataloaderr}.items():
-				print(f"Inferencing the {part} part...")
-				for batchh in tqdm(dataset):
-					with torch.no_grad():
-						sn_input_ids_all = batchh["sn_input_ids"].to(device)
-						sn_attention_mask_all = batchh["sn_attention_mask"].to(device)
-						word_ids_sn_all = batchh["word_ids_sn"].to(device)
-						sn_word_len_all = batchh["sn_word_len"].to(device)
-						sp_pos_all = batchh["sp_pos"].to(device)
-						sn_word_len_all = (sn_word_len_all - sn_word_len_mean)/sn_word_len_std
-						sn_word_len_all = torch.nan_to_num(sn_word_len_all)
+		for repeat in range(repeats):
+			print(f"Inferencing fold {fold_indx}, repeat {repeat + 1} out of {repeats}")
+			for batchh in tqdm(all_dataloaderr):
+				with torch.no_grad():
+					sn_input_ids_all = batchh["sn_input_ids"].to(device)
+					sn_attention_mask_all = batchh["sn_attention_mask"].to(device)
+					word_ids_sn_all = batchh["word_ids_sn"].to(device)
+					sn_word_len_all = batchh["sn_word_len"].to(device)
+					sn_word_len_all = (sn_word_len_all - sn_word_len_mean)/sn_word_len_std
+					sn_word_len_all = torch.nan_to_num(sn_word_len_all)
 
-						if bool(args.scanpath_gen_flag) == True:
-							sn_len = (torch.max(torch.nan_to_num(word_ids_sn_all), dim=1)[0]+1-2).detach().to('cpu').numpy()
-							#compute the scan path generated from the model when the first few fixed points are given
-							cls_sp_dnn, reg_sp_dnn = dnn.scanpath_generation(sn_emd=sn_input_ids_all,
-															sn_mask=sn_attention_mask_all,
-															word_ids_sn=word_ids_sn_all,
-															sn_word_len = sn_word_len_all,
-															le=le,
-															max_pred_len=onestop['max_pred_len'])
+					if bool(args.scanpath_gen_flag) == True:
+						sn_len = (torch.max(torch.nan_to_num(word_ids_sn_all), dim=1)[0]+1-2).detach().to('cpu').numpy()
+						#compute the scan path generated from the model when the first few fixed points are given
+						cls_sp_dnn, reg_sp_dnn = dnn.scanpath_generation(sn_emd=sn_input_ids_all,
+														sn_mask=sn_attention_mask_all,
+														word_ids_sn=word_ids_sn_all,
+														sn_word_len = sn_word_len_all,
+														le=le,
+														max_pred_len=onestop['max_pred_len'])
 
-							cls_sp_dnn, reg_sp_dnn, sp_human = prepare_scanpath(cls_sp_dnn.detach().to('cpu').numpy(), reg_sp_dnn.detach().to('cpu').numpy(), sn_len, sp_pos_all, onestop)
-							
-							if keep_ids:
-								unique_paragraph_ids = batchh["sn_unique_paragraph_id"]
-								text_spacing_version = batchh["sp_text_spacing_version"]
-								report_output = ez_reader_formatter(unique_paragraph_ids, text_spacing_version, cls_sp_dnn, reg_sp_dnn)
-								df_report_list.append(report_output)
+						cls_sp_dnn, reg_sp_dnn, _ = prepare_scanpath(cls_sp_dnn.detach().to('cpu').numpy(), reg_sp_dnn.detach().to('cpu').numpy(), sn_len, None, onestop)
+						
+						if keep_ids:
+							unique_paragraph_ids = batchh["sn_unique_paragraph_id"]
+							text_spacing_version = batchh["sp_text_spacing_version"]
+							report_output = ez_reader_formatter(unique_paragraph_ids, text_spacing_version, cls_sp_dnn, reg_sp_dnn, repeat)
+							df_report_list.append(report_output) #### repeats
 
 		all_df_report = pd.concat(df_report_list, ignore_index=True)
-		all_df_report.to_csv(f"results/Eyettention/full_eyettention_output_fold_{fold_indx}_run_{run+1}.csv", index=False)
+		all_df_report.to_csv(f"results/Eyettention/full_eyettention_output_fold_{fold_indx}.csv", index=False)

@@ -53,7 +53,10 @@ class Word:
 
 
 def word_DVs(text, trace): # wordDVs(ArrayList<Sentence> text, ArrayList<Fixation> trace)
-    """Convert trace into word-based dependent variables (DVs)."""
+    """Convert trace into word-based dependent variables (DVs).
+        every scanpath -> updates word level measures
+    
+    """
     for i in range(text.number_words):
         w = Word(len(text.get(i).dv.distSFD))  # Initialize word class for DVs
 
@@ -155,42 +158,50 @@ def word_DVs(text, trace): # wordDVs(ArrayList<Sentence> text, ArrayList<Fixatio
     
     return text
 
-def word_means(text, NSentences, maxLength, NSubjects, includeRegressionTrials):
-    """Calculate word-based means."""
-    for i in range(NSentences):
-        for j in range(text[i].number_words):
-            word_dv = text[i].get(j).dv
+def word_means(text, includeRegressionTrials=True):
 
-            if word_dv.Pr1 > 0:
-                word_dv.SFD /= word_dv.Pr1
+    """Calculate word-based means.
+    NSubjects - > num of scanpaths
+    maxLength -> longest word
+    text -> list of paragraphs
+    NSentences - > len of list of paragraphs #339vscode-remote://ssh-remote%2Blaccl-srv1.dds.technion.ac.il/data/home/ariel.kr/Eyettention/EZ_output.ipynb
+    
+    """
+    for word in text.word:
+        word_dv = word.dv
 
-            if word_dv.PrF > 0:
-                word_dv.TT /= word_dv.PrF
-                word_dv.GoPast /= word_dv.PrF
-                word_dv.FFD /= word_dv.PrF
-                word_dv.GD /= word_dv.PrF
+        if word_dv.Pr1 > 0:
+            word_dv.SFD /= word_dv.Pr1
 
-            if (word_dv.Pr1 + word_dv.Pr2) > 0:
-                for k in range(maxLength):
-                    if word_dv.distPr1[k] > 0:
-                        word_dv.distPr2[k] /= word_dv.distPr1[k]
-                    word_dv.distPr1[k] /= (word_dv.Pr1 + word_dv.Pr2)
-                    if word_dv.NSFD[k] > 0:
-                        word_dv.distSFD[k] /= word_dv.NSFD[k]
-                
-                word_dv.FirstPassGD /= (word_dv.Pr1 + word_dv.Pr2)
-                word_dv.FirstPassFFD /= (word_dv.Pr1 + word_dv.Pr2)
+        if word_dv.PrF > 0:
+            word_dv.TT /= word_dv.PrF
+            word_dv.GoPast /= word_dv.PrF
+            word_dv.FFD /= word_dv.PrF
+            word_dv.GD /= word_dv.PrF
 
-            if includeRegressionTrials:
-                text[i].regressionN = 0
+        if (word_dv.Pr1 + word_dv.Pr2) > 0:
+            for k in range(text.max_length):
+                if word_dv.distPr1[k] > 0:
+                    word_dv.distPr2[k] /= word_dv.distPr1[k]
+                word_dv.distPr1[k] /= (word_dv.Pr1 + word_dv.Pr2)
+                if word_dv.NSFD[k] > 0:
+                    word_dv.distSFD[k] /= word_dv.NSFD[k]
+            
+            word_dv.FirstPassGD /= (word_dv.Pr1 + word_dv.Pr2)
+            word_dv.FirstPassFFD /= (word_dv.Pr1 + word_dv.Pr2)
 
-            word_dv.Pr1 /= (NSubjects - text[i].regressionN)
-            word_dv.Pr2 /= (NSubjects - text[i].regressionN)
-            word_dv.PrS /= (NSubjects - text[i].regressionN)
-            word_dv.PrF /= (NSubjects - text[i].regressionN)
+        if includeRegressionTrials:
+            text.regressionN = 0
 
-            word_dv.NFixations /= NSubjects
-            word_dv.NRegIn /= NSubjects
-            word_dv.NRegOut /= NSubjects
-            word_dv.NRegOutFull /= NSubjects
-            word_dv.FirstFixProg /= NSubjects
+        word_dv.Pr1 /= (text.subj_number - text.regressionN)
+        word_dv.Pr2 /= (text.subj_number - text.regressionN)
+        word_dv.PrS /= (text.subj_number - text.regressionN)
+        word_dv.PrF /= (text.subj_number - text.regressionN)
+
+        word_dv.NFixations /= text.subj_number
+        word_dv.NRegIn /= text.subj_number
+        word_dv.NRegOut /= text.subj_number
+        word_dv.NRegOutFull /= text.subj_number
+        word_dv.FirstFixProg /= text.subj_number
+
+        word.dv = word_dv
