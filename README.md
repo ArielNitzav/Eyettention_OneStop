@@ -1,5 +1,5 @@
 # Eyettention - OneStopQA
-This repository contains an adapted implementation of the **Eyettention** model, designed to predict eye-tracking metrics from textual stimuli using the **OneStopQA dataset**. This work builds upon existing research in eye-tracking-informed NLP, specifically extending the methodologies introduced in ["Eyettention: Leveraging Eye-tracking Data for NLP Models"](https://arxiv.org/abs/2304.10784). This adaptation generates eye reading scan paths for longer inputs (expanding from short sentences in the original paper to paragraphs) and introduces a temporal decoder for reading time durations.
+This repository contains an adapted implementation of the **Eyettention** model, designed to predict eye-tracking metrics from textual stimuli using the **OneStopQA dataset**. This work builds upon existing research in eye-tracking-informed NLP, specifically extending the methodologies introduced in ["Eyettention: An Attention-based Dual-Sequence Model for Predicting Human Scanpaths during Reading"](https://arxiv.org/abs/2304.10784). This adaptation generates eye reading scan paths for longer inputs (expanding from short sentences in the original paper to paragraphs) and introduces a temporal decoder for reading time durations.
 
 For those unfamiliar with the domain, eye-tracking is the process of measuring where and for how long a person looks at different parts of a visual stimulus. In the context of **natural language processing (NLP)** and **cognitive science**, eye-tracking data provides valuable insights into human reading behavior, cognitive load, and comprehension. By modeling these patterns computationally, we can enhance applications in readability assessment, adaptive learning, and human-computer interaction.
 
@@ -62,7 +62,7 @@ The model architecture consists of:
 The trained model is evaluated based on its ability to predict eye-tracking features with minimal error. Performance is quantified using standard regression and classification metrics, depending on the specific task configuration.
 
 ## References
-- [Eyettention: Leveraging Eye-tracking Data for NLP Models](https://arxiv.org/abs/2304.10784)
+- [Eyettention: An Attention-based Dual-Sequence Model for Predicting Human Scanpaths during Reading](https://arxiv.org/abs/2304.10784)
 - [OneStopQA Dataset](https://github.com/berzak/onestop-qa)
 
 ## License
