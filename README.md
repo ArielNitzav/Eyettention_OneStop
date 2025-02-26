@@ -24,3 +24,51 @@ This repository extends previous work in computational psycholinguistics by offe
    ```sh
    git clone https://github.com/your-repo/Eyettention-OneStopQA.git
    cd Eyettention-OneStopQA
+   ```
+2. Install dependencies:
+   ```sh
+   pip install -r requirements.txt
+   ```
+
+## Usage
+### Model Training
+Execute the following command to train the model:
+```sh
+python main_onestop_CSD.py
+```
+
+### Inference
+To apply the trained model to new data:
+```sh
+python main_onestop_CSD_inference.py --input_file path/to/data.csv --output_file predictions.csv
+```
+
+### Evaluation
+Model performance can be assessed using standard evaluation metrics:
+```sh
+python evaluate.py --predictions predictions.csv --ground_truth labels.csv
+```
+
+## Dataset
+The **OneStopQA dataset**, developed for eye-tracking-based readability assessment, provides fine-grained gaze-tracking annotations aligned with textual input. The dataset includes:
+- Fixation duration per word
+- Saccade amplitude between fixations
+- Regression frequency across sentence boundaries
+
+The dataset is preprocessed using **BERT tokenization** and **embedding extraction** to ensure compatibility with transformer-based architectures.
+
+## Model Architecture
+The model architecture is structured as follows:
+- **BERT Encoder**: Generates context-sensitive word embeddings.
+- **Residual Processing Layers**: Refine the encoded features for more precise prediction of gaze metrics.
+- **Prediction Head**: Outputs numerical estimates for eye-tracking measures.
+
+## Results
+The trained model is evaluated based on its ability to predict eye-tracking features with minimal error. Performance is quantified using standard regression and classification metrics, depending on the specific task configuration.
+
+## References
+- [Eyettention: Leveraging Eye-tracking Data for NLP Models](https://arxiv.org/abs/2304.10784)
+- [OneStopQA Dataset](https://github.com/berzak/onestop-qa)
+
+## License
+This project is released under the MIT License. See `LICENSE` for full details.
