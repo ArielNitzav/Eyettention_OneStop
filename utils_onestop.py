@@ -243,6 +243,7 @@ def prepare_scanpath(sp_dnn, reg_sp_dnn, sn_len, sp_human, cf, ):
 	return sp_dnn_cut, reg_sp_dnn, sp_human_cut
 
 def ez_reader_formatter(unique_paragraph_ids, text_spacing_version, cls_dnn_sp, reg_dnn_sp, repeat):
+	'''
 	df_dict = {
 		"fix_id": [],
 		"unique_paragraph_id": [], 
@@ -251,6 +252,17 @@ def ez_reader_formatter(unique_paragraph_ids, text_spacing_version, cls_dnn_sp, 
 		"sp_fix_dur": np.array([]),
 		"repeat": []
 	}
+	'''
+
+	df_dict = {
+        "CURRENT_FIX_INDEX": [],
+        "CURRENT_FIX_DURATION": np.array([]),
+        "position": [],
+        "CURRENT_FIX_INTEREST_AREA_INDEX": [],
+        "unique_paragraph_id": [], 
+		"text_spacing_version": [], 
+        "repeats": []
+	}
 	
 	text_spacing_version = text_spacing_version.numpy().tolist()
 
@@ -258,16 +270,17 @@ def ez_reader_formatter(unique_paragraph_ids, text_spacing_version, cls_dnn_sp, 
 		# print(i)
 		assert(len(cds) == len(rds))
 		sp_len = len(cds)-1
-		df_dict["fix_id"] += list(range(sp_len))
+		df_dict["CURRENT_FIX_INDEX"] += list(range(sp_len))
 		df_dict["unique_paragraph_id"] += [upi]*sp_len
 		df_dict["text_spacing_version"] += [tsv]*sp_len
-		df_dict["sp_fix_pos"] += cds[:-1].tolist()
-		df_dict["sp_fix_dur"] = np.concatenate([df_dict["sp_fix_dur"], (rds*1000)[:-1]])
+		df_dict["CURRENT_FIX_INTEREST_AREA_INDEX"] += cds[:-1].tolist()
+		df_dict["CURRENT_FIX_DURATION"] = np.concatenate([df_dict["CURRENT_FIX_DURATION"], (rds*1000)[:-1]])
 	
-	df_dict["repeat"] = [repeat]*len(df_dict["fix_id"])
+	df_dict["repeats"] = [repeat]*len(df_dict["CURRENT_FIX_INDEX"])
+	df_dict["position"] = [np.nan] * len(df_dict["CURRENT_FIX_INDEX"])
 
 	output_df = pd.DataFrame.from_dict(df_dict)
-	output_df.sp_fix_dur = output_df.sp_fix_dur.round(3)
+	output_df.CURRENT_FIX_DURATION = output_df.CURRENT_FIX_DURATION.round(3)
 	return output_df
 
 def onestop_load_native_speaker():
